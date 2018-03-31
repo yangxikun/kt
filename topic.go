@@ -10,7 +10,10 @@ import (
 	"strings"
 	"sync"
 
+	"crypto/tls"
+	"crypto/x509"
 	"github.com/Shopify/sarama"
+	"io/ioutil"
 )
 
 type topicArgs struct {
@@ -22,6 +25,8 @@ type topicArgs struct {
 	verbose    bool
 	pretty     bool
 	version    string
+	cert       string
+	key        string
 }
 
 type topicCmd struct {
@@ -33,6 +38,10 @@ type topicCmd struct {
 	verbose    bool
 	pretty     bool
 	version    sarama.KafkaVersion
+	tls        struct {
+		cert string
+		key  string
+	}
 
 	client sarama.Client
 }
@@ -65,6 +74,8 @@ func (cmd *topicCmd) parseFlags(as []string) topicArgs {
 	flags.BoolVar(&args.verbose, "verbose", false, "More verbose logging to stderr.")
 	flags.BoolVar(&args.pretty, "pretty", true, "Control output pretty printing.")
 	flags.StringVar(&args.version, "version", "", "Kafka protocol version")
+	flags.StringVar(&args.cert, "cert", "", "pem file path")
+	flags.StringVar(&args.key, "key", "", "key file path")
 	flags.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage of topic:")
 		flags.PrintDefaults()
@@ -112,6 +123,8 @@ func (cmd *topicCmd) parseArgs(as []string) {
 	cmd.pretty = args.pretty
 	cmd.verbose = args.verbose
 	cmd.version = kafkaVersion(args.version)
+	cmd.tls.cert = args.cert
+	cmd.tls.key = args.key
 }
 
 func (cmd *topicCmd) connect() {
@@ -120,6 +133,29 @@ func (cmd *topicCmd) connect() {
 		usr *user.User
 		cfg = sarama.NewConfig()
 	)
+
+	if cmd.tls.cert != "" && cmd.tls.key != "" {
+		cert, err := tls.LoadX509KeyPair(cmd.tls.cert, cmd.tls.key)
+		if err != nil {
+			panic(err)
+		}
+		certBytes, err := ioutil.ReadFile(cmd.tls.cert)
+		if err != nil {
+			panic(err)
+		}
+		clientCertPool := x509.NewCertPool()
+		ok := clientCertPool.AppendCertsFromPEM(certBytes)
+		if !ok {
+			panic("failed to parse root certificate")
+		}
+
+		cfg.Net.TLS.Enable = true
+		cfg.Net.TLS.Config = &tls.Config{
+			RootCAs:            clientCertPool,
+			Certificates:       []tls.Certificate{cert},
+			InsecureSkipVerify: true,
+		}
+	}
 
 	cfg.Version = cmd.version
 

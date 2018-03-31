@@ -11,7 +11,10 @@ import (
 	"strings"
 	"sync"
 
+	"crypto/tls"
+	"crypto/x509"
 	"github.com/Shopify/sarama"
+	"io/ioutil"
 )
 
 type groupCmd struct {
@@ -25,6 +28,10 @@ type groupCmd struct {
 	pretty     bool
 	version    sarama.KafkaVersion
 	offsets    bool
+	tls        struct {
+		cert string
+		key  string
+	}
 
 	client sarama.Client
 }
@@ -308,6 +315,29 @@ func (cmd *groupCmd) saramaConfig() *sarama.Config {
 		cfg = sarama.NewConfig()
 	)
 
+	if cmd.tls.cert != "" && cmd.tls.key != "" {
+		cert, err := tls.LoadX509KeyPair(cmd.tls.cert, cmd.tls.key)
+		if err != nil {
+			panic(err)
+		}
+		certBytes, err := ioutil.ReadFile(cmd.tls.cert)
+		if err != nil {
+			panic(err)
+		}
+		clientCertPool := x509.NewCertPool()
+		ok := clientCertPool.AppendCertsFromPEM(certBytes)
+		if !ok {
+			panic("failed to parse root certificate")
+		}
+
+		cfg.Net.TLS.Enable = true
+		cfg.Net.TLS.Config = &tls.Config{
+			RootCAs:            clientCertPool,
+			Certificates:       []tls.Certificate{cert},
+			InsecureSkipVerify: true,
+		}
+	}
+
 	cfg.Version = cmd.version
 	if usr, err = user.Current(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to read current user err=%v", err)
@@ -339,6 +369,8 @@ func (cmd *groupCmd) parseArgs(as []string) {
 	cmd.pretty = args.pretty
 	cmd.offsets = args.offsets
 	cmd.version = kafkaVersion(args.version)
+	cmd.tls.cert = args.cert
+	cmd.tls.key = args.key
 
 	switch args.partitions {
 	case "", "all":
@@ -411,6 +443,8 @@ type groupArgs struct {
 	pretty     bool
 	version    string
 	offsets    bool
+	cert       string
+	key        string
 }
 
 func (cmd *groupCmd) parseFlags(as []string) groupArgs {
@@ -426,6 +460,8 @@ func (cmd *groupCmd) parseFlags(as []string) groupArgs {
 	flags.StringVar(&args.version, "version", "", "Kafka protocol version")
 	flags.StringVar(&args.partitions, "partitions", allPartitionsHuman, "comma separated list of partitions to limit offsets to, or all")
 	flags.BoolVar(&args.offsets, "offsets", true, "Controls if offsets should be fetched (defauls to true)")
+	flags.StringVar(&args.cert, "cert", "", "pem file path")
+	flags.StringVar(&args.key, "key", "", "key file path")
 
 	flags.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage of group:")
